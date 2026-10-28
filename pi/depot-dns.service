@@ -1,0 +1,11 @@
+[Unit]
+Description=DEPOT DHCP and DNS
+After=depot-ap.service
+Requires=depot-ap.service
+
+[Service]
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq-depot.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

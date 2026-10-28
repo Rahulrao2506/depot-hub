@@ -1,0 +1,16 @@
+[Unit]
+Description=DEPOT Wi-Fi access point
+After=network.target
+Before=dnsmasq.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/rfkill unblock wlan
+ExecStartPre=/sbin/ip link set wlan0 up
+ExecStartPre=/sbin/ip addr flush dev wlan0
+ExecStartPre=/sbin/ip addr add 10.42.0.1/24 dev wlan0
+ExecStart=/usr/sbin/hostapd /etc/hostapd/depot.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

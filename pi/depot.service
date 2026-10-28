@@ -1,0 +1,13 @@
+[Unit]
+Description=DEPOT web server
+After=depot-dns.service
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/depot
+ExecStart=/home/pi/depot/venv/bin/python server.py --port 80 --https-port 443
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
