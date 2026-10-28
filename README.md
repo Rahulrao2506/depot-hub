@@ -26,6 +26,12 @@ Voice recording works on localhost. For other devices use HTTPS (below).
 
 Change the Wi-Fi password in `pi/hostapd.conf` and the country code before real use.
 
+## Run on the internet
+See `DEPLOY.md` for a step-by-step Render guide. Short version: the `Dockerfile` runs
+`server.py` under gunicorn (one worker, many threads); set `DEPOT_PIN` to require a room PIN,
+keep `DEPOT_DATA` on a persistent disk. Environment variables: `DEPOT_PIN`, `DEPOT_PUBLIC=1`,
+`DEPOT_PROXY=1`, `DEPOT_MAX_STORAGE_MB`, `DEPOT_RATE_LIMIT=0`, `PORT`.
+
 ## Layout
     server.py         Flask API, live push (SSE), SQLite, spam guard
     web/index.html    the whole phone UI
@@ -35,6 +41,6 @@ Change the Wi-Fi password in `pi/hostapd.conf` and the country code before real 
 ## Notes and limits
 - One Pi is the whole network. Everyone must be in its Wi-Fi range.
 - Not end-to-end encrypted; the hub operator can read everything.
-- Names are not verified. Files are reachable by anyone on the Wi-Fi who has the link.
+- Names are not verified. Downloads need a joined device (token or cookie), so a bare link no longer works for strangers.
 - SOS alerts people on this Wi-Fi only. It does not contact emergency services.
 - The Pi has no battery clock. The hub learns the time from the first phone that joins.

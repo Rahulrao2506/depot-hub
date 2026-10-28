@@ -1,0 +1,19 @@
+# Render Blueprint: Render reads this file and creates the service for you.
+services:
+  - type: web
+    name: depot-hub
+    runtime: docker
+    plan: starter            # paid (about $7/month). A persistent disk needs a paid plan.
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DEPOT_PIN
+        sync: false          # Render asks you to type the PIN when you create the service
+      - key: DEPOT_MAX_STORAGE_MB
+        value: "800"
+      - key: DEPOT_NAME
+        value: DEPOT
+    disk:
+      name: depot-data
+      mountPath: /data
+      sizeGB: 1

@@ -18,6 +18,7 @@ No internet is needed. The only dependency is Flask.
 """
 import argparse
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -34,6 +35,7 @@ from functools import wraps
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
@@ -48,8 +50,24 @@ STATUSES = ["unknown", "safe", "help", "injured"]
 HEALTH_FIELDS = ["blood", "allergies", "conditions", "medications", "contact", "notes"]
 HUB_IP = os.environ.get("DEPOT_IP", "10.42.0.1")
 
+# --- Cloud / public-hub settings (all optional; the Pi needs none of them) ---
+# DEPOT_PIN        room PIN. If set, people must enter it to join.
+# DEPOT_PUBLIC=1   hosted on the internet: hide IP addresses, never let a client
+#                  change the server clock, show no Wi-Fi device list.
+# DEPOT_PROXY=1    server sits behind a reverse proxy (Render, Fly, Railway):
+#                  trust X-Forwarded-* headers for client IP and https.
+# DEPOT_MAX_STORAGE_MB  total upload quota (0 = unlimited, only disk space check)
+# DEPOT_RATE_LIMIT=0    turn the per-IP rate limits off
+PIN = os.environ.get("DEPOT_PIN", "").strip()
+PUBLIC = os.environ.get("DEPOT_PUBLIC", "") == "1"
+MAX_STORAGE = int(os.environ.get("DEPOT_MAX_STORAGE_MB", "0") or 0) * 1024 * 1024
+RATE_ON = os.environ.get("DEPOT_RATE_LIMIT", "1") != "0"
+HUB_NAME = os.environ.get("DEPOT_NAME", "DEPOT")
+
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD + 512 * 1024
+if os.environ.get("DEPOT_PROXY", "") == "1":
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # --------------------------------------------------------------------------
 # Clock: a Pi has no battery-backed clock, so after a power loss it may think
@@ -60,6 +78,15 @@ CLOCK = {"offset": 0.0}
 
 def now():
     return time.time() + CLOCK["offset"]
+
+
+def client_ip():
+    return request.remote_addr or ""
+
+
+def shown_ip(ip):
+    """On a public hub, never show people's IP addresses to each other."""
+    return "" if PUBLIC else (ip or "")
 
 
 # --------------------------------------------------------------------------
@@ -153,17 +180,23 @@ def make_uid(token):
 
 
 def current_user():
-    token = request.headers.get("X-Depot-Token") or request.args.get("token")
+    token = request.headers.get("X-Depot-Token") or request.args.get("token") or request.cookies.get("depot_token")
     if not token:
         return None
     u = run("SELECT * FROM users WHERE token=?", (token,), "one")
     if not u:
         return None
     t = now()
-    if t - (u["last_seen"] or 0) > 20 or u["ip"] != request.remote_addr:
-        run("UPDATE users SET last_seen=?, ip=? WHERE token=?", (t, request.remote_addr, token), "none")
-        u["ip"] = request.remote_addr
+    if t - (u["last_seen"] or 0) > 20 or u["ip"] != client_ip():
+        run("UPDATE users SET last_seen=?, ip=? WHERE token=?", (t, client_ip(), token), "none")
+        u["ip"] = client_ip()
     return u
+
+
+def with_cookie(resp, token):
+    resp.set_cookie("depot_token", token, max_age=60 * 60 * 24 * 365, httponly=True,
+                    samesite="Lax", secure=request.is_secure)
+    return resp
 
 
 def auth(fn):
@@ -182,7 +215,7 @@ def public_user(u):
         "uid": u["uid"],
         "name": u["name"],
         "status": u["status"],
-        "ip": u["ip"],
+        "ip": shown_ip(u["ip"]),
         "health": json.loads(u["health"] or "{}"),
     }
 
@@ -305,6 +338,66 @@ def throttled(secs, reason):
 
 
 # --------------------------------------------------------------------------
+# Per-IP rate limits (sliding window). SOS endpoints are never limited.
+# --------------------------------------------------------------------------
+class RateLimiter:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.hits = {}
+        self.last_prune = time.time()
+
+    def hit(self, key, limit, window):
+        t = time.time()
+        with self.lock:
+            if t - self.last_prune > 300:
+                self.hits = {k: [x for x in v if t - x < 3600] for k, v in self.hits.items()}
+                self.hits = {k: v for k, v in self.hits.items() if v}
+                self.last_prune = t
+            q = [x for x in self.hits.get(key, []) if t - x < window]
+            if len(q) >= limit:
+                self.hits[key] = q
+                return False, int(window - (t - q[0])) + 1
+            q.append(t)
+            self.hits[key] = q
+            return True, 0
+
+    def count(self, key, window):
+        t = time.time()
+        with self.lock:
+            return len([x for x in self.hits.get(key, []) if t - x < window])
+
+
+limiter = RateLimiter()
+# (path prefix or exact, method or None, limit, window seconds, bucket)
+RATE_RULES = [
+    ("/api/join", "POST", 15, 600, "join"),
+    ("/api/upload", "POST", 12, 60, "upload"),
+    ("/api/messages", "POST", 60, 60, "msg"),
+    ("/api/files", "DELETE", 30, 60, "del"),
+]
+GLOBAL_LIMIT = (600, 60)  # requests per window per IP, a safety net only
+
+
+@app.before_request
+def rate_limit():
+    if not RATE_ON:
+        return None
+    path = request.path
+    if path.startswith("/api/sos") or path in ("/healthz", "/api/stream") or not path.startswith("/api/"):
+        return None
+    ip = client_ip()
+    for prefix, method, limit, window, bucket in RATE_RULES:
+        if path.startswith(prefix) and (method is None or request.method == method):
+            ok, wait = limiter.hit(f"{bucket}:{ip}", limit, window)
+            if not ok:
+                return jsonify(error="Too many requests from this device. Please wait a moment.", retry_after=wait), 429
+    ok, wait = limiter.hit(f"all:{ip}", *GLOBAL_LIMIT)
+    if not ok:
+        return jsonify(error="Too many requests from this device. Please wait a moment.", retry_after=wait), 429
+    return None
+
+
+# --------------------------------------------------------------------------
 # Pages & captive portal
 # --------------------------------------------------------------------------
 @app.get("/")
@@ -337,6 +430,20 @@ def too_large(_e):
     return jsonify(error=f"File is too large. The limit is {MAX_UPLOAD // (1024 * 1024)} MB."), 413
 
 
+@app.get("/healthz")
+def healthz():
+    try:
+        run("SELECT 1", (), "one")
+        return jsonify(ok=True)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(ok=False, error=str(exc)), 503
+
+
+@app.get("/api/config")
+def config():
+    return jsonify(pin_required=bool(PIN), name=HUB_NAME, public=PUBLIC)
+
+
 @app.get("/api/ping")
 def ping():
     return jsonify(ok=True, name="DEPOT", time=now())
@@ -352,34 +459,48 @@ def join():
     if not name:
         return jsonify(error="Enter a display name."), 400
 
-    # Learn the real time from a phone if the Pi's clock is far off.
-    try:
-        client_time = float(d.get("client_time"))
-        if abs(client_time - now()) > 120:
-            CLOCK["offset"] += client_time - now()
-    except (TypeError, ValueError):
-        pass
-
-    health = json.dumps(clean_health(d.get("health")))
     token = d.get("token")
     user = run("SELECT * FROM users WHERE token=?", (token,), "one") if token else None
+
+    # Room PIN: required for new devices (a device that already holds a valid token is already in).
+    if PIN and not user:
+        ip = client_ip()
+        if limiter.count(f"pinfail:{ip}", 900) >= 5:
+            return throttled(300, "Too many wrong PINs. Wait 5 minutes and try again.")
+        given = clean(d.get("pin"), 64)
+        if not hmac.compare_digest(given.encode(), PIN.encode()):
+            limiter.hit(f"pinfail:{ip}", 10**6, 900)
+            return jsonify(error="Wrong PIN." if given else "This hub needs a PIN.", pin_required=True), 403
+
+    # Learn the real time from a phone if the Pi's clock is far off.
+    # Never on a public hub: the server clock is right and a stranger must not move it.
+    if not PUBLIC:
+        try:
+            client_time = float(d.get("client_time"))
+            if abs(client_time - now()) > 120:
+                CLOCK["offset"] += client_time - now()
+        except (TypeError, ValueError):
+            pass
+
+    health = json.dumps(clean_health(d.get("health")))
     t = now()
     if user:
         run("UPDATE users SET name=?, health=?, ip=?, last_seen=? WHERE token=?",
-            (name, health, request.remote_addr, t, token), "none")
+            (name, health, client_ip(), t, token), "none")
     else:
         token = uuid.uuid4().hex
         run("INSERT INTO users(token,uid,name,health,status,ip,created,last_seen) VALUES(?,?,?,?,?,?,?,?)",
-            (token, make_uid(token), name, health, "unknown", request.remote_addr, t, t), "none")
+            (token, make_uid(token), name, health, "unknown", client_ip(), t, t), "none")
     user = run("SELECT * FROM users WHERE token=?", (token,), "one")
     broadcast("people", {})
-    return jsonify(token=token, user=public_user(user), channels=CHANNELS)
+    return with_cookie(jsonify(token=token, user=public_user(user), channels=CHANNELS), token)
 
 
 @app.get("/api/me")
 @auth
 def me(u):
-    return jsonify(user=public_user(u), channels=CHANNELS, active_sos=[sos_json(r) for r in active_sos()])
+    return with_cookie(jsonify(user=public_user(u), channels=CHANNELS,
+                               active_sos=[sos_json(r) for r in active_sos()]), u["token"])
 
 
 @app.post("/api/status")
@@ -438,6 +559,60 @@ VOICE_EXT = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a", "a
              "audio/wav": ".wav", "audio/x-m4a": ".m4a", "audio/aac": ".aac"}
 
 
+BLOCKED_EXT = {
+    ".exe", ".dll", ".msi", ".bat", ".cmd", ".com", ".scr", ".pif", ".cpl", ".vbs", ".vbe", ".js", ".jse",
+    ".wsf", ".wsh", ".ps1", ".psm1", ".sh", ".bash", ".jar", ".app", ".dmg", ".reg", ".lnk", ".hta",
+    ".html", ".htm", ".xhtml", ".svg", ".php", ".py", ".pl", ".rb",
+}
+
+
+def sniff_kind(head):
+    """Identify common media containers from the first bytes. Returns image/audio/video/av/'binary'/None."""
+    if head[:2] == b"MZ" or head[:4] == b"\x7fELF" or head[:4] in (b"\xca\xfe\xba\xbe", b"\xcf\xfa\xed\xfe"):
+        return "binary"
+    if head[:3] == b"\xff\xd8\xff" or head[:8] == b"\x89PNG\r\n\x1a\n" or head[:6] in (b"GIF87a", b"GIF89a") or head[:2] == b"BM":
+        return "image"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "audio"
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return "video"
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"heic", b"heix", b"hevc", b"mif1", b"msf1", b"avif"):
+            return "image"
+        if brand in (b"M4A ", b"M4B ", b"M4P "):
+            return "audio"
+        return "av"  # mp4 / mov / 3gp: may carry audio or video
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "av"  # webm / mkv
+    if head[:4] == b"OggS":
+        return "av"
+    if head[:3] == b"ID3" or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xf1", b"\xff\xf9"):
+        return "audio"
+    if head[:6] == b"#!AMR\n" or head[:4] == b"fLaC":
+        return "audio"
+    return None
+
+
+def check_upload(path, mime, ext):
+    """Return an error string if the saved file is not acceptable, else None."""
+    if ext in BLOCKED_EXT:
+        return f"Files of type {ext} are not allowed on this hub."
+    with open(path, "rb") as fh:
+        head = fh.read(16)
+    kind = sniff_kind(head)
+    if kind == "binary":
+        return "Programs and executables are not allowed on this hub."
+    major = mime.split("/")[0]
+    if major in ("image", "audio", "video"):
+        ok = kind == major or (kind == "av" and major in ("audio", "video"))
+        if not ok:
+            return "That file's contents do not match its type."
+    return None
+
+
 @app.post("/api/upload")
 @auth
 def upload(u):
@@ -474,6 +649,15 @@ def upload(u):
     if size == 0:
         path.unlink(missing_ok=True)
         return jsonify(error="That file is empty."), 400
+    problem = check_upload(path, mime, ext)
+    if problem:
+        path.unlink(missing_ok=True)
+        return jsonify(error=problem), 415
+    if MAX_STORAGE:
+        used = run("SELECT COALESCE(SUM(size),0) AS n FROM messages WHERE kind IN ('file','voice')", (), "one")["n"]
+        if used > MAX_STORAGE:
+            path.unlink(missing_ok=True)
+            return jsonify(error="The hub's file storage quota is full. Delete old files first."), 507
     try:
         dur = float(request.form.get("duration", 0)) or None
     except ValueError:
@@ -485,6 +669,8 @@ def upload(u):
 
 @app.get("/uploads/<name>")
 def serve_upload(name):
+    if not current_user():
+        return jsonify(error="Join the hub first."), 401
     if not re.fullmatch(r"[0-9a-f]{32}(\.[a-z0-9]{1,8})?", name):
         return jsonify(error="Not found."), 404
     row = run("SELECT fname, mime FROM messages WHERE stored=?", (name,), "one")
@@ -527,7 +713,7 @@ def delete_file(u, mid):
 # --------------------------------------------------------------------------
 def sos_json(r):
     return {
-        "id": r["id"], "uid": r["uid"], "name": r["name"], "ip": r["ip"], "note": r["note"] or "",
+        "id": r["id"], "uid": r["uid"], "name": r["name"], "ip": shown_ip(r["ip"]), "note": r["note"] or "",
         "ts": r["ts"], "resolved": bool(r["resolved"]),
         "health": json.loads(r["health"] or "{}"),
         "responders": json.loads(r["responders"] or "[]"),
@@ -556,7 +742,8 @@ def raise_sos(u):
     row = run("SELECT * FROM sos WHERE id=?", (sid,), "one")
     run("UPDATE users SET status='help' WHERE token=?", (u["token"],), "none")
     broadcast("sos", sos_json(row))
-    system_message(f"SOS raised by {u['name']} ({u['ip']}).", "general")
+    where = f" ({u['ip']})" if shown_ip(u["ip"]) else ""
+    system_message(f"SOS raised by {u['name']}{where}.", "general")
     broadcast("people", {})
     return jsonify(sos=sos_json(row))
 
@@ -670,9 +857,11 @@ def network(u):
     users = run("SELECT uid,name,status,ip,last_seen FROM users ORDER BY last_seen DESC LIMIT 200")
     for x in users:
         x["online"] = x["uid"] in online
-    devices = read_devices()
+    devices = {} if PUBLIC else read_devices()
     for x in users:
-        if x["online"] and x["ip"] and x["ip"] not in devices:
+        if PUBLIC:
+            x["ip"] = ""
+        elif x["online"] and x["ip"] and x["ip"] not in devices:
             devices[x["ip"]] = {"ip": x["ip"], "mac": "", "host": ""}
     names_by_ip = {}
     for x in sorted(users, key=lambda r: r["online"]):
@@ -740,7 +929,8 @@ def serve(host, port, ssl_context=None):
 def main():
     parser = argparse.ArgumentParser(description="DEPOT offline hub")
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8080, help="HTTP port (80 on the Pi)")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8080)),
+                        help="HTTP port (80 on the Pi; hosts set PORT for you)")
     parser.add_argument("--https-port", type=int, default=0, help="also serve HTTPS on this port (443 on the Pi)")
     args = parser.parse_args()
 
@@ -758,6 +948,9 @@ def main():
     except KeyboardInterrupt:
         pass
 
+
+# Create the database when a production server (gunicorn) imports this module.
+init_db()
 
 if __name__ == "__main__":
     main()

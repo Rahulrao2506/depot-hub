@@ -230,6 +230,10 @@ h3{margin:0 0 8px;font-size:1rem}
     <form id="joinForm" class="panel" autocomplete="off">
       <label for="jName" style="margin-top:0">Your name</label>
       <input id="jName" name="name" type="text" maxlength="24" required placeholder="What should people call you?">
+      <div id="pinRow" hidden>
+        <label for="jPin">Hub PIN</label>
+        <input id="jPin" name="pin" type="password" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="Ask the person who runs this hub">
+      </div>
       <details class="health">
         <summary>Add an emergency health card (optional)</summary>
         <p class="hint">Shown to everyone on the network only if you send an SOS.</p>
@@ -479,8 +483,8 @@ const readHealth = form => Object.fromEntries(Object.keys(HEALTH_LABELS).map(k =
 function fillHealth(form, hc) { Object.keys(HEALTH_LABELS).forEach(k => { if (form.elements[k]) form.elements[k].value = (hc && hc[k]) || ''; }); }
 
 /* ================= join / leave ================= */
-async function join(name, health) {
-  const data = await api('/api/join', { method: 'POST', body: { name, health, token: S.token, client_time: Date.now() / 1000 } });
+async function join(name, health, pin) {
+  const data = await api('/api/join', { method: 'POST', body: { name, health, pin, token: S.token, client_time: Date.now() / 1000 } });
   S.token = data.token;
   localStorage.setItem('depot.token', S.token);
   localStorage.setItem('depot.name', name);
@@ -501,6 +505,7 @@ function forget(showJoin) {
 function showJoin() {
   $('#join').hidden = false; $('#app').hidden = true;
   $('#jName').value = localStorage.getItem('depot.name') || '';
+  fetch('/api/config').then(r => r.json()).then(c => { $('#pinRow').hidden = !c.pin_required; }).catch(() => {});
 }
 async function enterApp() {
   $('#join').hidden = true; $('#app').hidden = false;
@@ -949,8 +954,8 @@ function init() {
   $('#joinForm').addEventListener('submit', async e => {
     e.preventDefault(); unlockAudio();
     const f = e.target; $('#jErr').textContent = '';
-    try { await join(f.elements.name.value.trim(), readHealth(f)); enterApp(); }
-    catch (err) { $('#jErr').textContent = err.error || 'Could not join.'; }
+    try { await join(f.elements.name.value.trim(), readHealth(f), f.elements.pin ? f.elements.pin.value.trim() : ''); enterApp(); }
+    catch (err) { if (err.pin_required) $('#pinRow').hidden = false; $('#jErr').textContent = err.error || 'Could not join.'; }
   });
   $('#meForm').addEventListener('submit', async e => {
     e.preventDefault(); const f = e.target; $('#mErr').textContent = '';
