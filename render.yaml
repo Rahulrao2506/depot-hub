@@ -3,7 +3,7 @@ services:
   - type: web
     name: depot-hub
     runtime: docker
-    plan: starter            # paid (about $7/month). A persistent disk needs a paid plan.
+    plan: free            # paid (about $7/month). A persistent disk needs a paid plan.
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
@@ -13,7 +13,3 @@ services:
         value: "800"
       - key: DEPOT_NAME
         value: DEPOT
-    disk:
-      name: depot-data
-      mountPath: /data
-      sizeGB: 1
