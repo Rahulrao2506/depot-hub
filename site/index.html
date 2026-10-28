@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>DEPOT: communication that works when the internet doesn't</title>
+<meta name="description" content="A Raspberry Pi turns into a Wi-Fi hub with chat, file sharing, voice notes and SOS alerts. No internet needed.">
+<style>
+:root{--bg:#E8EEF0;--surface:#fff;--surface2:#F2F6F7;--ink:#10242B;--muted:#4D626A;--line:#CBD8DC;--brand:#0B6E6E;--brand-ink:#fff;--brand-soft:#D3EDEB;--sos:#D92D20;--sos-dark:#A81E14;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#0D1A1F;--surface:#15262D;--surface2:#1B3039;--ink:#E5EEF0;--muted:#9BB0B7;--line:#26414B;--brand:#2FB3AC;--brand-ink:#04211F;--brand-soft:#16413F;--sos:#E5483B;--sos-dark:#B4291E}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+nav{display:flex;align-items:center;gap:20px;padding:16px 0}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.05em;text-decoration:none;margin-right:auto}
+.logo i{width:30px;height:30px;border-radius:9px;background:var(--brand);display:grid;place-items:center;color:var(--brand-ink)}
+nav a.l{text-decoration:none;color:var(--muted);font-weight:600;font-size:.95rem}
+nav a.l:hover{color:var(--ink)}
+.btn{display:inline-flex;align-items:center;gap:8px;min-height:46px;padding:0 22px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font-weight:700;text-decoration:none}
+.btn.p{background:var(--brand);color:var(--brand-ink);border-color:transparent}
+.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center;padding:36px 0 70px}
+h1{font-size:clamp(2.4rem,6vw,4rem);line-height:1.02;letter-spacing:-.03em;margin:0 0 18px;font-weight:800}
+.lead{font-size:1.15rem;color:var(--muted);max-width:46ch;margin:0 0 26px}
+.cta{display:flex;gap:12px;flex-wrap:wrap}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:26px}
+.chips span{font-size:.85rem;font-weight:700;padding:5px 12px;border-radius:999px;background:var(--brand-soft);color:var(--brand)}
+
+/* phone demo */
+.phone{width:min(330px,100%);margin:0 auto;border:8px solid var(--ink);border-radius:36px;background:var(--bg);overflow:hidden;position:relative;height:560px;display:flex;flex-direction:column;box-shadow:0 30px 60px -20px rgba(16,36,43,.45)}
+.ph-top{display:flex;align-items:center;gap:8px;padding:12px 14px;background:var(--surface);border-bottom:1px solid var(--line)}
+.ph-top b{margin-right:auto;font-size:.9rem;letter-spacing:.05em}
+.live{display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--muted)}
+.live::before{content:"";width:8px;height:8px;border-radius:50%;background:#1B9B5B}
+.sos{border:0;border-radius:999px;color:#fff;font-weight:800;font-size:.78rem;padding:0 12px;min-height:34px;touch-action:none;user-select:none;-webkit-user-select:none;cursor:pointer;background:linear-gradient(90deg,var(--sos-dark) calc(var(--p,0)*1%),var(--sos) calc(var(--p,0)*1%))}
+.chat{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:80%;font-size:.86rem}
+.m small{display:block;color:var(--muted);font-size:.68rem;margin:0 6px 2px}
+.m div{padding:8px 12px;border-radius:14px 14px 14px 4px;background:var(--surface);border:1px solid var(--line)}
+.m.me{align-self:flex-end}
+.m.me small{text-align:right}
+.m.me div{background:var(--brand);color:var(--brand-ink);border-color:transparent;border-radius:14px 14px 4px 14px}
+.file{display:flex;gap:10px;align-items:center}
+.file b{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:var(--surface2);font-size:.65rem}
+.sysm{align-self:center;font-size:.72rem;color:var(--muted);background:var(--surface2);border:1px solid var(--line);padding:3px 10px;border-radius:999px}
+.ph-in{display:flex;gap:6px;padding:8px;background:var(--surface);border-top:1px solid var(--line)}
+.ph-in input{flex:1;min-width:0;border:1px solid var(--line);border-radius:999px;padding:9px 14px;background:var(--bg);color:var(--ink);font:inherit;font-size:.86rem}
+.ph-in button{border:0;border-radius:50%;width:38px;height:38px;background:var(--brand);color:var(--brand-ink);font-weight:800;cursor:pointer}
+.alarm{position:absolute;inset:0;background:var(--sos);color:#fff;padding:26px 20px;display:none;flex-direction:column;animation:fl 1.2s steps(2,jump-none) infinite}
+.alarm.on{display:flex}
+@keyframes fl{50%{background:var(--sos-dark)}}
+.alarm h3{font-size:2rem;line-height:1;margin:8px 0;font-weight:900}
+.alarm dl{margin:14px 0;background:rgba(0,0,0,.22);border-radius:12px;padding:4px 14px;font-size:.85rem}
+.alarm dl div{display:flex;gap:10px;padding:7px 0;border-top:1px solid rgba(255,255,255,.2)}
+.alarm dl div:first-child{border:0}
+.alarm dt{width:80px;opacity:.85}
+.alarm dd{margin:0;font-weight:700}
+.alarm button{min-height:46px;border:0;border-radius:999px;font-weight:800;font-size:.95rem;cursor:pointer;margin-top:8px;background:#fff;color:var(--sos-dark)}
+.alarm button.alt{background:rgba(0,0,0,.28);color:#fff}
+.hint{text-align:center;font-size:.85rem;color:var(--muted);margin:14px 0 0}
+
+section{padding:56px 0}
+h2{font-size:clamp(1.7rem,4vw,2.4rem);letter-spacing:-.02em;margin:0 0 12px;line-height:1.1}
+.sub{color:var(--muted);max-width:56ch;margin:0 0 30px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px}
+.card h3{margin:0 0 6px;font-size:1.05rem}
+.card p{margin:0;color:var(--muted);font-size:.95rem}
+.card .n{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--brand);color:var(--brand-ink);font-weight:800;margin-bottom:10px}
+.steps{counter-reset:s;list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.steps li{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px 16px 62px;position:relative}
+.steps li::before{counter-increment:s;content:counter(s);position:absolute;left:16px;top:14px;width:32px;height:32px;border-radius:50%;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;font-weight:800}
+pre{margin:10px 0 0;padding:12px 14px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);overflow-x:auto;font:.85rem var(--mono)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.warn{background:var(--surface);border:1px solid var(--line);border-left:5px solid var(--sos);border-radius:14px;padding:20px 22px}
+.warn ul{margin:8px 0 0;padding-left:20px;color:var(--muted)}
+footer{padding:36px 0 50px;color:var(--muted);font-size:.92rem;border-top:1px solid var(--line)}
+@media (max-width:860px){.hero{grid-template-columns:1fr;padding-bottom:40px}.two{grid-template-columns:1fr}nav a.l{display:none}}
+@media (prefers-reduced-motion:reduce){.alarm{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="#"><i>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></i>DEPOT</a>
+    <a class="l" href="#features">Features</a>
+    <a class="l" href="#setup">Set up</a>
+    <a class="btn" href="https://github.com/Rahulrao2506/depot-hub">GitHub</a>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <h1>Communication that works when the internet doesn't.</h1>
+      <p class="lead">A Raspberry Pi becomes a Wi-Fi hub. Everyone nearby joins from their phone's browser to chat, share files, send voice notes and call for help, with no app and no internet.</p>
+      <div class="cta">
+        <a class="btn p" href="https://github.com/Rahulrao2506/depot-hub">Get the code</a>
+        <a class="btn" href="#setup">Set up your own hub</a>
+      </div>
+      <div class="chips"><span>Chat</span><span>File sharing</span><span>Voice notes</span><span>SOS alerts</span><span>Network monitor</span></div>
+    </div>
+
+    <div>
+      <div class="phone" id="phone" aria-label="Interactive demo of the DEPOT app">
+        <div class="ph-top"><b>DEPOT</b><span class="live">3 online</span><button class="sos" id="sos" type="button" aria-label="Hold for one second to try the SOS alert">Hold for SOS</button></div>
+        <div class="chat" id="chat">
+          <div class="m"><small>Ravi 12:41</small><div>Water truck is at the school gate.</div></div>
+          <div class="m"><small>Meera 12:42</small><div class="file"><b>PDF</b><span>shelter-map.pdf<br><small style="margin:0">1.2 MB</small></span></div></div>
+          <div class="sysm">Asha is safe. 12:43</div>
+          <div class="m me"><small>You 12:44</small><div>Thanks, heading there now.</div></div>
+        </div>
+        <div class="ph-in"><input id="msg" type="text" placeholder="Try typing a message" aria-label="Demo message"><button id="send" type="button" aria-label="Send">&#10148;</button></div>
+        <div class="alarm" id="alarm" role="alertdialog" aria-label="Demo SOS alert">
+          <h3>Asha needs help</h3>
+          <div>SOS sent just now</div>
+          <dl><div><dt>Address</dt><dd>10.42.0.57</dd></div><div><dt>Blood group</dt><dd>O+</dd></div><div><dt>Allergies</dt><dd>Penicillin</dd></div><div><dt>Contact</dt><dd>Mother, 98xxxxxx10</dd></div></dl>
+          <button id="coming" type="button">I'm coming</button>
+          <button class="alt" id="close" type="button">Close demo</button>
+        </div>
+      </div>
+      <p class="hint">This is a demo. Type a message, or hold the red button for one second.</p>
+    </div>
+  </header>
+</div>
+
+<section id="features"><div class="wrap">
+  <h2>Built for the first hours of an emergency</h2>
+  <p class="sub">When towers are down or power is out, people near each other still need to talk. DEPOT keeps everything on one small local network.</p>
+  <div class="grid">
+    <div class="card"><h3>Live chat channels</h3><p>General, Medical, Supplies and Rescue, so urgent messages don't get buried.</p></div>
+    <div class="card"><h3>File and photo sharing</h3><p>Share maps, lists and photos up to 25 MB, then browse and search them in one library.</p></div>
+    <div class="card"><h3>Voice notes</h3><p>Record and send a message when typing is hard. Playback works in any browser.</p></div>
+    <div class="card"><h3>SOS with a health card</h3><p>Hold one button. Every phone gets a loud alert with blood group, allergies and contact. Responders tap "I'm coming".</p></div>
+    <div class="card"><h3>Safety check-in</h3><p>Mark yourself safe, in need of help or injured, so families and teams can see who is accounted for.</p></div>
+    <div class="card"><h3>Network monitor</h3><p>See who is online, which devices are connected, and the Pi's temperature, memory and storage.</p></div>
+    <div class="card"><h3>Offline first-aid guide</h3><p>Bleeding, CPR, burns, clean water, earthquake and flood steps, readable with no signal.</p></div>
+    <div class="card"><h3>Spam guard</h3><p>Flooding and repeated messages get escalating timeouts. SOS is never blocked.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>How it works</h2>
+  <p class="sub">Nothing to install on phones. The Pi does the work.</p>
+  <div class="grid">
+    <div class="card"><span class="n">1</span><h3>The Pi makes a Wi-Fi network</h3><p>It broadcasts a network called "depot" and hands out addresses to phones that join.</p></div>
+    <div class="card"><span class="n">2</span><h3>Phones open the hub</h3><p>The page opens automatically, or at 10.42.0.1. Pick a name and you're in.</p></div>
+    <div class="card"><span class="n">3</span><h3>Everything stays local</h3><p>Messages and files are stored on the Pi's own card. No cloud, no accounts.</p></div>
+  </div>
+</div></section>
+
+<section id="setup"><div class="wrap">
+  <h2>Set up your own hub</h2>
+  <p class="sub">You need a Raspberry Pi with Wi-Fi and a microSD card with Raspberry Pi OS.</p>
+  <ol class="steps">
+    <li><b>Download the code</b> and copy it to the Pi.<pre>git clone https://github.com/Rahulrao2506/depot-hub.git
+cd depot-hub</pre></li>
+    <li><b>Run the setup script.</b> It installs everything and starts the hub on boot.<pre>sudo bash pi/setup.sh</pre></li>
+    <li><b>Join the Wi-Fi</b> named <code>depot</code> from any phone and open <code>https://10.42.0.1</code>. Accept the one-time certificate warning; this is what allows voice recording.</li>
+    <li><b>Try it on a laptop first</b> if you have no Pi yet.<pre>pip install flask
+python server.py</pre></li>
+  </ol>
+</div></section>
+
+<section><div class="wrap">
+  <div class="warn">
+    <h2 style="font-size:1.3rem">Know the limits</h2>
+    <ul>
+      <li>SOS alerts people on the same Wi-Fi only. It does not contact emergency services, so call your local number if you have any mobile signal.</li>
+      <li>Everyone must be within range of the Pi's Wi-Fi.</li>
+      <li>Messages are not end-to-end encrypted, and names are not verified.</li>
+      <li>This page is only a showcase. The real hub runs on the Pi, not on this website.</li>
+    </ul>
+  </div>
+</div></section>
+
+<footer><div class="wrap">DEPOT offline communication hub. Source on <a href="https://github.com/Rahulrao2506/depot-hub">GitHub</a>.</div></footer>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const chat = $('#chat'), msg = $('#msg');
+  function send() {
+    const t = msg.value.trim(); if (!t) return;
+    const time = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const el = document.createElement('div'); el.className = 'm me';
+    const s = document.createElement('small'); s.textContent = 'You ' + time;
+    const d = document.createElement('div'); d.textContent = t;
+    el.append(s, d); chat.append(el); chat.scrollTop = chat.scrollHeight; msg.value = '';
+  }
+  $('#send').addEventListener('click', send);
+  msg.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+  const b = $('#sos'), alarm = $('#alarm'); let raf, start, on = false;
+  const reset = () => { on = false; cancelAnimationFrame(raf); b.style.setProperty('--p', 0); };
+  const step = () => {
+    if (!on) return;
+    const p = Math.min(100, (performance.now() - start) / 10);
+    b.style.setProperty('--p', p);
+    if (p >= 100) { reset(); alarm.classList.add('on'); $('#coming').focus(); } else raf = requestAnimationFrame(step);
+  };
+  const begin = () => { on = true; start = performance.now(); raf = requestAnimationFrame(step); };
+  b.addEventListener('pointerdown', begin);
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => b.addEventListener(t, reset));
+  b.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && !e.repeat) { e.preventDefault(); begin(); } });
+  b.addEventListener('keyup', reset);
+  b.addEventListener('contextmenu', e => e.preventDefault());
+  $('#coming').addEventListener('click', e => { e.target.textContent = "You're on the way"; e.target.disabled = true; });
+  $('#close').addEventListener('click', () => { alarm.classList.remove('on'); const c = $('#coming'); c.textContent = "I'm coming"; c.disabled = false; });
+})();
+</script>
+</body>
+</html>
